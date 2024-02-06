@@ -39,4 +39,5 @@ This simulation project models an airport passenger system to analyze queue dyna
 
 - This simulation is built using MATLAB. Ensure the necessary MATLAB licenses.
 - Adjust simulation parameters based on your specific requirements.
+- There may be some issues with some parameters and how the chi-square was used but couldn't be properly fixed due to time contraints.
 
