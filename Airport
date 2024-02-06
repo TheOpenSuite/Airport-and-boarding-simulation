@@ -1,0 +1,267 @@
+% Simulation parameters
+%NumSimulations = 1; % Number of simulations to run
+%SimulationLength = 1440; % Length of each simulation in minutes (SimulationLength = NumPassengersWithOffset / PassengerGenerationRate; under line 50)
+%NumAirlines = 65; % Number of airlines
+%NumCounters = 21; % Number of counters (M/M/C model) (21)
+%NumPassengers = 37000; % Number of passengers to generate
+%PassengerGenerationRate = 25.69; % Rate at which passengers arrive in passengers per minute (25.69)(lambda)
+%BusinessClassPassengers = 0.1; % Fraction of passengers who are business class
+%CounterServiceRate = 18; % Rate at which counters can serve passengers in passengers per minute (30)(18)(mu)
+%OverweightCounterServiceRate = 0.5; % Service rate for overweight luggage counter
+NumSimulations = input('Enter the number of simulations to run: ');
+SimulationLength = input('Enter the length of each simulation in minutes: ');
+NumAirlines = input('Enter the number of airlines: ');
+NumCounters = input('Enter the number of counters (M/M/C model): ');
+NumPassengers = input('Enter the number of passengers to generate: ');
+PassengerGenerationRate = input('Enter the rate at which passengers arrive (passengers per minute): ');
+BusinessClassPassengers = input('Enter the fraction of passengers who are business class: ');
+CounterServiceRate = input('Enter the rate at which counters can serve passengers (passengers per minute): ');
+OverweightCounterServiceRate = input('Enter the service rate for overweight luggage counter: ');
+
+% Airplane capacity parameters
+Capacities = [60 100 150 200 250]; % Capacities of airplanes in passengers
+ProbCapacities = Capacities / sum(Capacities); % Probability distribution of airplane capacities
+
+% Delay parameters
+MeanDelay = 15; % Mean delay in minutes
+ActivityDelayProbability = 0.17; % Probability of engaging in an activity
+ActivityDelayMean = 10; % Mean duration of the activity delay in minutes
+OverweightLuggageProbability = 0.05;
+
+% Initialize total waiting time
+TotalWaitingTime = 0;
+TotalWaitingTimeEconomy = 0;
+TotalWaitingTimeBusiness = 0;
+TotalWaitingTimeOverweight = 0; % Initialize waiting time for overweight luggage
+TotalTimeInSystem = 0;
+TotalTimeInSystemOverweight = 0;
+TotalServiceTime = 0;
+
+% Measure execution time
+tic;
+
+%% Run simulations
+for sim = 1:NumSimulations
+    % Set a new seed for random number generation
+    rng('shuffle');
+    % Initialize counters and airplanes for each simulation
+    Counters = zeros(1, NumCounters); % Initialize counters with no passengers
+    OverweightCounter = zeros(1, 1); % Initialize overweight luggage counter
+    Airplanes = randsample(Capacities, NumAirlines, true, ProbCapacities); % Initialize airplanes with random passengers based on probability distribution
+    randomOffset = randi([-5000, 5000]);
+    NumPassengersWithOffset = NumPassengers + randomOffset;
+    PassengerQueue = []; % Initialize passenger queue
+    OverweightPassengerQueue = table([], [], 'VariableNames', {'ArrivalTime', 'WaitingTime'}); % Initialize overweight passenger queue
+
+    % Initialize passenger queue as a table with columns: ArrivalTime, WaitingTime, BoardingTime, DelayDuration, Class
+    PassengerQueue = table([], [], [], [], [], 'VariableNames', {'ArrivalTime', 'WaitingTime', 'BoardingTime', 'DelayDuration', 'Class'});
+
+    % Generate a random number of passengers with overweight luggage
+    NumOverweightPassengers = round(rand() * 0.05 * NumPassengersWithOffset); % 5% of total passengers
+
+    % Generate random arrival times for passengers with overweight luggage
+    OverweightPassengerQueue = table(exprnd(1/PassengerGenerationRate, NumOverweightPassengers, 1), ...
+                                     zeros(NumOverweightPassengers, 1), ...
+                                     'VariableNames', {'ArrivalTime', 'WaitingTime'});
+    
+    % Sort the overweight passenger queue based on arrival time
+    OverweightPassengerQueue = sortrows(OverweightPassengerQueue, 'ArrivalTime');
+    
+% Generate passengers until SimulationLength is reached
+timeElapsed = 0;
+while timeElapsed < SimulationLength
+    % Simulate passenger arrival
+    TimePassengerArrives = exprnd(1/PassengerGenerationRate); % Exponential distribution for memoryless arrivals
+    WaitingTime = 0; % Initialize waiting time for each new passenger
+    
+    % Check for delay
+    DelayDuration = 0;
+    if poissrnd(0.2) > 0
+        DelayDuration = exprnd(MeanDelay); % Calculate the duration of the delay in minutes
+        % Simulate the passage of time due to the delay
+        TimePassengerArrives = TimePassengerArrives + DelayDuration/60;
+        WaitingTime = WaitingTime + DelayDuration/60;
+    end
+    
+    % Check for activity delay
+    if rand() < ActivityDelayProbability
+        ActivityDelayDuration = exprnd(ActivityDelayMean);
+        % Simulate the passage of time due to the activity delay
+        TimePassengerArrives = TimePassengerArrives + ActivityDelayDuration/60;
+        WaitingTime = WaitingTime + ActivityDelayDuration/60;
+    end
+    
+    % Randomly determine if the passenger has overweight luggage
+    if rand() < OverweightLuggageProbability
+        % Add to the overweight passenger queue
+        OverweightPassengerQueue = [OverweightPassengerQueue; table(TimePassengerArrives, 0, 'VariableNames', {'ArrivalTime', 'WaitingTime'})];
+    else
+        % Add to the regular passenger queue
+        if rand() < BusinessClassPassengers
+            % Add to the front of the queue
+            PassengerQueue = [table(TimePassengerArrives, WaitingTime, 0, DelayDuration, 1, 'VariableNames', {'ArrivalTime', 'WaitingTime', 'BoardingTime', 'DelayDuration', 'Class'}); PassengerQueue];
+        else
+            % Add to the end of the queue
+            PassengerQueue = [PassengerQueue; table(TimePassengerArrives, WaitingTime, 0, DelayDuration, 0, 'VariableNames', {'ArrivalTime', 'WaitingTime', 'BoardingTime', 'DelayDuration', 'Class'})];
+        end
+    end    
+    % Update elapsed time
+    timeElapsed = timeElapsed + TimePassengerArrives;
+end
+    
+    % Process passengers in the queue
+    for i = 1:size(PassengerQueue, 1)
+        % Process each passenger based on their arrival time and service time
+        ServiceRatePerCounter = CounterServiceRate / NumCounters;
+        ArrivalTime = PassengerQueue(i, 1);
+        ServiceTime = exprnd(1/ServiceRatePerCounter); % Exponential distribution for memoryless service times
+        TotalServiceTime = TotalServiceTime + ServiceTime;
+        ServiceTimePerPassenger(i) = ServiceTime;
+
+        % Find the counter with the minimum number of passengers (M/M/C)
+        [~, minCounterIndex] = min(Counters);
+
+        % If the counter is busy, calculate the waiting time
+        if Counters(minCounterIndex) > 0
+            WaitingTime = Counters(minCounterIndex) / ServiceRatePerCounter;
+        else
+            WaitingTime = 0;
+        end
+
+        % Simulate passenger service at counters
+        Counters(minCounterIndex) = Counters(minCounterIndex) + 1;
+        % Adjust boarding time based on passenger class
+        if PassengerQueue{i, 5} == 1  % Check if the passenger is in business class
+            BoardingTime = 1 + rand;  % Example: Boarding time for business class passengers between 1 and 2 minutes
+        else
+            BoardingTime = 10 + rand;  % Example: Boarding time for economy class passengers between 4 and 5 minutes
+        end
+
+        % Calculate the departure time
+        DepartureTime = ArrivalTime + WaitingTime + ServiceTime + BoardingTime;
+
+        TotalTimeInSystem = TotalTimeInSystem + (WaitingTime + ServiceTime + BoardingTime);
+
+        % Accumulate waiting time based on passenger class
+        if PassengerQueue{i, 5} == 1  % Check if the passenger is in business class
+            TotalWaitingTimeBusiness = TotalWaitingTimeBusiness + WaitingTime;
+        else
+            TotalWaitingTimeEconomy = TotalWaitingTimeEconomy + WaitingTime;
+        end
+
+    % Accumulate total waiting time
+    TotalWaitingTime = TotalWaitingTime + WaitingTime;
+    end
+    % Process passengers with overweight luggage at the last counter
+    for i = 1:size(OverweightPassengerQueue, 1)
+        % Process each passenger with overweight luggage
+        ArrivalTime = OverweightPassengerQueue{i, 'ArrivalTime'};
+        ServiceTime = exprnd(1/OverweightCounterServiceRate); % Exponential service time for overweight luggage
+        TotalServiceTime = TotalServiceTime + ServiceTime;
+        ServiceTimePerPassengerOverweight(i) = ServiceTime;
+
+        % Check if the overweight luggage counter is busy
+        if OverweightCounter > 0
+            WaitingTime = OverweightCounter / OverweightCounterServiceRate;
+        else
+            WaitingTime = 0;
+        end
+
+        % Simulate service at the overweight luggage counter
+        OverweightCounter = OverweightCounter + 1;
+
+        % Calculate departure time for passengers with overweight luggage
+        DepartureTime = ArrivalTime + WaitingTime + ServiceTime + BoardingTime;
+
+        TotalTimeInSystemOverweight = TotalTimeInSystemOverweight + (DepartureTime - ArrivalTime);
+        % Accumulate waiting time for overweight luggage
+        TotalWaitingTimeOverweight = TotalWaitingTimeOverweight + WaitingTime;
+    end
+    
+    % Clear processed passengers from the queue
+    %PassengerQueue = [];
+    
+    % Update elapsed time after processing all passengers in the queue
+    timeElapsed = timeElapsed + WaitingTime;
+end
+
+%% Chai square
+% Specify the expected range for total time in the system (in minutes)
+simulatedData = [TotalTimeInSystem];
+% Specify the expected range for total time in the system (in minutes)
+expectedRange = [95, 140];
+% Define observed frequencies (e.g., number of observations in each interval)
+observedFrequencies = histcounts(simulatedData, 'BinEdges', [0, expectedRange, Inf]);
+% Define expected frequencies based on a uniform distribution
+totalObservations = numel(simulatedData);
+expectedFrequencies = totalObservations / numel(expectedRange);
+% Calculate the chi-square statistic
+chiSquareStat = sum((observedFrequencies - expectedFrequencies).^2 / expectedFrequencies);
+% Degrees of freedom (number of intervals - 1)
+degreesOfFreedom = numel(expectedRange) - 1;
+% Significance level
+alpha = 0.05;
+% Critical chi-square value from chi-square distribution table
+criticalChiSquare = chi2inv(1 - alpha, degreesOfFreedom);
+%%
+
+% Calculate average waiting time per passenger
+AverageWaitingTimePerPassenger = TotalWaitingTime / (NumPassengersWithOffset * NumSimulations);
+AverageWaitingTimePerPassengerOverweight = TotalWaitingTimeOverweight / (NumPassengersWithOffset * NumSimulations * OverweightLuggageProbability + eps); % Add eps to avoid division by zero
+AverageTimeInSystemPerPassenger = TotalTimeInSystem / (NumPassengersWithOffset * NumSimulations);
+AverageTimeInSystemPerPassengerOverweight = TotalTimeInSystemOverweight / (NumPassengersWithOffset * NumSimulations * OverweightLuggageProbability + eps); % Add eps to avoid division by zero
+AverageWaitingTimePerPassengerEconomy = TotalWaitingTimeEconomy / (NumPassengersWithOffset * NumSimulations * (1 - BusinessClassPassengers));
+AverageWaitingTimePerPassengerBusiness = TotalWaitingTimeBusiness / (NumPassengersWithOffset * NumSimulations * BusinessClassPassengers + eps); % Add eps to avoid division by zero
+
+% Display key simulation statistics and elapsed time
+disp('Simulation completed.');
+disp(['Number of Simulations: ' num2str(NumSimulations)]);
+disp(['Simulation Length (minutes): ' num2str(SimulationLength)]);
+disp(['Number of Counters (M/M/C model): ' num2str(NumCounters)]);
+disp(['Number Of Passengers: ' num2str(NumPassengersWithOffset)]);
+disp(['Average Service Time Per Passenger: ' num2str(mean(ServiceTimePerPassenger)) ' minutes.']);
+disp(['Average Service Time Per Overweight Passenger: ' num2str(mean(ServiceTimePerPassengerOverweight)) ' minutes.']);
+disp(['Average Time In System Per Passenger: ' num2str(AverageTimeInSystemPerPassenger)]);
+disp(['Average Time In System Per Passenger Overweight: ' num2str(AverageTimeInSystemPerPassengerOverweight)]);
+disp(['Average Waiting Time Per Passenger: ' num2str(AverageWaitingTimePerPassenger)]);
+disp(['Average Waiting Time Per overweight luggage Passenger: ' num2str(AverageWaitingTimePerPassengerOverweight)]);
+disp(['Average Waiting Time Per Passenger (Economy): ' num2str(AverageWaitingTimePerPassengerEconomy)]);
+disp(['Average Waiting Time Per Passenger (Business): ' num2str(AverageWaitingTimePerPassengerBusiness)]);
+% Display average arrival and departure times for each class
+disp('Average Arrival and Departure Times for Each Class:');
+disp('Class | Average Arrival Time | Average Departure Time');
+
+% Calculate average arrival time for each class
+AverageArrivalTimeBusiness = mean(PassengerQueue{PassengerQueue.Class == 1, 'ArrivalTime'});
+AverageArrivalTimeEconomy = mean(PassengerQueue{PassengerQueue.Class == 0, 'ArrivalTime'});
+
+% Calculate average departure times (includes waiting, service, and boarding times)
+AverageDepartureTimeBusiness = AverageArrivalTimeBusiness + ...
+    mean(PassengerQueue{PassengerQueue.Class == 1, 2}) + ...
+    mean(exprnd(1/(CounterServiceRate / NumCounters)) + 1 + rand(size(PassengerQueue{PassengerQueue.Class == 1, 'ArrivalTime'})));
+
+AverageDepartureTimeEconomy = AverageArrivalTimeEconomy + ...
+    mean(PassengerQueue{PassengerQueue.Class == 0, 'WaitingTime'}) + ...
+    mean(exprnd(1/(CounterServiceRate / NumCounters)) + 2 + rand(size(PassengerQueue{PassengerQueue.Class == 0, 'ArrivalTime'})));
+
+% Display average times
+disp(['Business | ' num2str(AverageArrivalTimeBusiness) ' | ' num2str(AverageDepartureTimeBusiness)]);
+disp(['Economy | ' num2str(AverageArrivalTimeEconomy) ' | ' num2str(AverageDepartureTimeEconomy)]);
+disp(['Total Waiting Time: ' num2str(TotalWaitingTime) ' minutes.']);
+disp(['Total Time In System: ' num2str(TotalTimeInSystem)]);
+disp(['Total Service Time: ' num2str(TotalServiceTime) ' minutes.']);
+% Compare the calculated chi-square statistic with the critical value
+if chiSquareStat > criticalChiSquare
+    disp('The observed distribution is significantly different so it is rejected.');
+else
+    disp('The observed distribution is not significantly different so it is a success.');
+end
+
+% Clear processed passengers from the queue
+PassengerQueue = [];
+OverweightPassengerQueue = [];
+
+toc;
+
+https://www.cairo-airport.info/
+https://www.airportsdata.net/airport-CAI/
